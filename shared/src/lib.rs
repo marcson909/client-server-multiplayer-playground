@@ -13,7 +13,7 @@ pub const TILE_SIZE: f32 = 32.0;
 pub const PROTOCOL_ID: u64 = 7;
 pub const SERVER_PORT: u16 = 5000;
 pub const TICK_RATE: f32 = 0.6; // 600ms per tick
-pub const VIEW_DISTANCE: i32 = 15;
+pub const VIEW_DISTANCE: i32 = 5;
 pub const INTERPOLATION_DELAY: f32 = 0.1;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]

@@ -23,14 +23,14 @@ pub fn client_update_system(
     mut commands: Commands,
 ) {
     if client.is_connected() && !client_state.join_sent && client_state.my_player_id.is_none() {
-        info!("  - Connected to server!");
+        info!("Connected to server!");
         let msg = ClientMessage::Join {
             name: "Player".to_string(),
         };
         if let Ok(msg_bytes) = bincode::serialize(&msg) {
             client.send_message(DefaultChannel::ReliableOrdered, msg_bytes);
             client_state.join_sent = true; // Mark as sent to prevent duplicate
-            info!("  - Sent join request to server");
+            info!("Sent join request to server");
         }
     }
 
@@ -52,14 +52,14 @@ pub fn client_update_system(
     }
 
     while let Some(message) = client.receive_message(DefaultChannel::ReliableOrdered) {
-        debug!("  - Received reliable message: {} bytes", message.len());
+        debug!("Received reliable message: {} bytes", message.len());
         if let Ok(server_msg) = bincode::deserialize::<ServerMessage>(&message) {
             handle_server_message_reliable(server_msg, &mut client_state, &mut commands);
         }
     }
 
     while let Some(message) = client.receive_message(DefaultChannel::Unreliable) {
-        debug!("  - Received unreliable message: {} bytes", message.len());
+        debug!("Received unreliable message: {} bytes", message.len());
         if let Ok(server_msg) = bincode::deserialize::<ServerMessage>(&message) {
             handle_server_message_unreliable(server_msg, &mut client_state);
         }
@@ -112,11 +112,11 @@ pub fn handle_tile_movement_input(
 
     if let Some(pos) = target_pos {
         if !state.pathfinder.is_walkable(&pos) {
-            warn!("  -  Cannot walk {} to {:?} - blocked!", direction, pos);
+            warn!(" Cannot walk {} to {:?} - blocked!", direction, pos);
             return;
         }
 
-        info!("  - Moving {} from {:?} to {:?}", direction, my_pos, pos);
+        info!("Moving {} from {:?} to {:?}", direction, my_pos, pos);
         let action = GameAction::Move { path: vec![pos] };
         let msg = ClientMessage::QueueAction { action };
         let msg_bytes = bincode::serialize(&msg).unwrap();
@@ -158,11 +158,11 @@ pub fn handle_mouse_pathfinding(
                         if !tree.is_chopped {
                             let tree_def = TreeDefinition::get(tree.tree_type);
                             info!(
-                                "  - Click: Attempting to chop {:?} at {:?}",
+                                "Click: Attempting to chop {:?} at {:?}",
                                 tree.tree_type, entity.tile_position
                             );
                             info!(
-                                "  - Required level: {}, XP: {}",
+                                "Required level: {}, XP: {}",
                                 tree_def.level_required, tree_def.experience
                             );
 
@@ -183,7 +183,7 @@ pub fn handle_mouse_pathfinding(
             if let Some(my_entity_id) = state.my_entity_id {
                 if let Some(my_entity) = state.visible_entities.get(&my_entity_id) {
                     info!(
-                        "  -  Click: Requesting path from {:?} to {:?}",
+                        "Click: Requesting path from {:?} to {:?}",
                         my_entity.tile_position, target_tile
                     );
                     let msg = ClientMessage::RequestPath {
@@ -244,11 +244,11 @@ pub fn handle_pathfinding_update(
                         if !tree.is_chopped {
                             let tree_def = TreeDefinition::get(tree.tree_type);
                             info!(
-                                "  - Click: Attempting to chop {:?} at {:?}",
+                                "Click: Attempting to chop {:?} at {:?}",
                                 tree.tree_type, entity.tile_position
                             );
                             info!(
-                                "  - Required level: {}, XP: {}",
+                                "Required level: {}, XP: {}",
                                 tree_def.level_required, tree_def.experience
                             );
 
@@ -269,7 +269,7 @@ pub fn handle_pathfinding_update(
             if let Some(my_entity_id) = state.my_entity_id {
                 if let Some(my_entity) = state.visible_entities.get(&my_entity_id) {
                     info!(
-                        "  -  Click: Requesting path from {:?} to {:?}",
+                        "Click: Requesting path from {:?} to {:?}",
                         my_entity.tile_position, target_tile
                     );
                     let msg = ClientMessage::RequestPath {
@@ -310,21 +310,21 @@ pub fn handle_server_message_reliable(
             spawn_position: spawn_pos,
         } => {
             state.my_player_id = Some(player_id);
-            info!("  - Welcome! Assigned player ID: {:?}", player_id);
-            info!("  - Spawn position: {:?}", spawn_pos);
+            info!("Welcome! Assigned player ID: {:?}", player_id);
+            info!("Spawn position: {:?}", spawn_pos);
         }
 
         ServerMessage::EntitiesEntered { entities } => {
-            info!("  -  {} entities entered view", entities.len());
+            info!("{} entities entered view", entities.len());
             for snapshot in entities {
                 if snapshot.tree.is_some() {
                     debug!(
-                        "  - Tree entity {} at {:?}",
+                        "Tree entity {} at {:?}",
                         snapshot.entity_id, snapshot.tile_position
                     );
                 } else if snapshot.player_id.is_some() {
                     info!(
-                        "  - Player entity {} at {:?}",
+                        "Player entity {} at {:?}",
                         snapshot.entity_id, snapshot.tile_position
                     );
                 }
@@ -333,44 +333,44 @@ pub fn handle_server_message_reliable(
         }
 
         ServerMessage::EntitiesLeft { entity_ids } => {
-            info!("  - {} entities left view", entity_ids.len());
+            info!("{} entities left view", entity_ids.len());
             for entity_id in entity_ids {
                 if let Some(client_entity) = state.visible_entities.remove(&entity_id) {
                     commands.entity(client_entity.entity).despawn();
-                    debug!("  -  Despawned entity {}", entity_id);
+                    debug!(" Despawned entity {}", entity_id);
                 }
             }
         }
 
         ServerMessage::ActionQueued { action } => {
-            info!("  - Action queued: {:?}", action);
+            info!("Action queued: {:?}", action);
         }
 
         ServerMessage::ActionCompleted { entity_id } => {
-            debug!("  - Action completed for entity {}", entity_id);
+            debug!("Action completed for entity {}", entity_id);
         }
 
         ServerMessage::PathFound { path } => {
-            info!("  -  Path found with {} tiles", path.len());
+            info!("Path found with {} tiles", path.len());
             state.confirmed_path = Some(path);
         }
 
         ServerMessage::PathNotFound => {
-            warn!("  -  No path found to target!");
+            warn!("No path found to target!");
             state.confirmed_path = None;
         }
 
         ServerMessage::ObstacleData { obstacles } => {
             state.pathfinder.obstacles = obstacles.into_iter().collect();
             info!(
-                "  -  Received {} obstacles from server",
+                "Received {} obstacles from server",
                 state.pathfinder.obstacles.len()
             );
         }
 
         ServerMessage::InventoryUpdate { inventory } => {
             state.inventory = inventory;
-            debug!("  - Inventory updated");
+            debug!("Inventory updated");
         }
 
         ServerMessage::ItemAdded {
@@ -379,7 +379,7 @@ pub fn handle_server_message_reliable(
         } => {
             let def = ItemDefinition::get(item_type);
             let total = state.inventory.count_item(item_type);
-            info!("  - Received {} x{} (total: {})", def.name, quantity, total);
+            info!("Received {} x{} (total: {})", def.name, quantity, total);
         }
 
         ServerMessage::ItemRemoved {
@@ -387,7 +387,7 @@ pub fn handle_server_message_reliable(
             quantity,
         } => {
             let def = ItemDefinition::get(item_type);
-            info!("  -  Removed {} x{}", def.name, quantity);
+            info!("Removed {} x{}", def.name, quantity);
         }
 
         ServerMessage::SkillUpdate {
@@ -396,17 +396,17 @@ pub fn handle_server_message_reliable(
             experience,
         } => {
             state.skills.insert(skill, SkillData { level, experience });
-            debug!("  - {:?}: Level {} (XP: {})", skill, level, experience);
+            debug!("{:?}: Level {} (XP: {})", skill, level, experience);
         }
 
         ServerMessage::LevelUp { skill, new_level } => {
-            info!("  - LEVEL UP! {:?} is now level {}!", skill, new_level);
+            info!("LEVEL UP! {:?} is now level {}!", skill, new_level);
         }
 
         ServerMessage::ExperienceGained { skill, amount } => {
             if let Some(skill_data) = state.skills.get(&skill) {
                 info!(
-                    "  - {} {:?} XP (total: {})",
+                    "{} {:?} XP (total: {})",
                     amount, skill, skill_data.experience
                 );
             }
@@ -416,7 +416,7 @@ pub fn handle_server_message_reliable(
             if let Some(entity) = state.visible_entities.get_mut(&tree_entity_id) {
                 if let Some(ref mut tree) = entity.tree {
                     tree.is_chopped = true;
-                    info!("  - Tree {} chopped!", tree_entity_id);
+                    info!("Tree {} chopped!", tree_entity_id);
                 }
             }
         }
@@ -425,7 +425,7 @@ pub fn handle_server_message_reliable(
             if let Some(entity) = state.visible_entities.get_mut(&tree_entity_id) {
                 if let Some(ref mut tree) = entity.tree {
                     tree.is_chopped = false;
-                    info!("  - Tree {} respawned!", tree_entity_id);
+                    info!("Tree {} respawned!", tree_entity_id);
                 }
             }
         }
@@ -436,13 +436,13 @@ pub fn handle_server_message_reliable(
             current,
         } => {
             warn!(
-                "  - Need level {} {:?} (current: {})",
+                "Need level {} {:?} (current: {})",
                 required, skill, current
             );
         }
 
         ServerMessage::NoAxeEquipped => {
-            warn!("  -  You need an axe to chop this tree!");
+            warn!("You need an axe to chop this tree!");
         }
 
         _ => {}
@@ -546,17 +546,17 @@ pub fn spawn_client_entity(
         entity_commands.insert(LocalPlayer);
         state.my_entity_id = Some(snapshot.entity_id);
         info!(
-            "  - Spawned local player entity at {:?}",
+            "Spawned local player entity at {:?}",
             snapshot.tile_position
         );
     } else if snapshot.tree.is_some() {
         debug!(
-            "  - Spawned tree entity {} at {:?}",
+            "Spawned tree entity {} at {:?}",
             snapshot.entity_id, snapshot.tile_position
         );
     } else {
         info!(
-            "  - Spawned remote player entity {} at {:?}",
+            "Spawned remote player entity {} at {:?}",
             snapshot.entity_id, snapshot.tile_position
         );
     }

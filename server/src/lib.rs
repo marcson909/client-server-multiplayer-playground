@@ -79,7 +79,7 @@ impl Default for ServerState {
     fn default() -> Self {
         let mut pathfinder = Pathfinder::new(false);
 
-        // Add boundary walls
+        // add boundary walls
         for x in -5..=5 {
             pathfinder.add_obstacle(TilePosition { x, y: 5 });
             pathfinder.add_obstacle(TilePosition { x, y: -5 });
@@ -125,14 +125,14 @@ pub fn setup_server(mut commands: Commands, mut state: ResMut<ServerState>) {
 
     spawn_trees(&mut state, &mut commands);
 
-    info!("  - Server started on {}", server_addr);
-    info!("  - Server configuration:");
-    info!("  - Max clients: 64");
-    info!("  - Protocol ID: {}", PROTOCOL_ID);
-    info!("  - Tick rate: {}ms", (TICK_RATE * 1000.0) as u32);
-    info!("  - View distance: {} tiles", VIEW_DISTANCE);
+    info!("Server started on {}", server_addr);
+    info!("Server configuration:");
+    info!("Max clients: 64");
+    info!("Protocol ID: {}", PROTOCOL_ID);
+    info!("Tick rate: {}ms", (TICK_RATE * 1000.0) as u32);
+    info!("View distance: {} tiles", VIEW_DISTANCE);
     info!(
-        "  - Spawned {} entities (including {} trees)",
+        "Spawned {} entities (including {} trees)",
         state.entities.len(),
         state.entities.len()
     );
@@ -182,18 +182,17 @@ pub fn server_update_system(
 ) {
     server_state.tick_accumulator += time.delta_seconds();
 
-    // Handle disconnections
     for client_id in server.clients_id() {
         while let Some(message) = server.receive_message(client_id, DefaultChannel::ReliableOrdered)
         {
             debug!(
-                " - Received message from ClientId({}), {} bytes",
+                "Received message from ClientId({}), {} bytes",
                 client_id.raw(),
                 message.len()
             );
             if let Ok(client_msg) = bincode::deserialize::<ClientMessage>(&message) {
                 info!(
-                    " - Processing message from PlayerId({}): {:?}",
+                    "Processing message from PlayerId({}): {:?}",
                     client_id.raw(),
                     match &client_msg {
                         ClientMessage::Join { name } => format!("Join(name={})", name),
@@ -216,7 +215,6 @@ pub fn server_update_system(
         }
     }
 
-    // Check for disconnected clients and clean them up
     handle_disconnections(
         &mut server,
         &mut server_state,
@@ -227,7 +225,7 @@ pub fn server_update_system(
     while server_state.tick_accumulator >= TICK_RATE {
         server_state.tick_accumulator -= TICK_RATE;
         server_state.server_tick += 1;
-        debug!("  -  Server tick #{}", server_state.server_tick);
+        debug!("Server tick #{}", server_state.server_tick);
         process_server_tick(&mut server_state, &mut server, &mut interest_manager);
     }
 }
@@ -242,7 +240,7 @@ pub fn handle_client_message(
 ) {
     match message {
         ClientMessage::Join { name } => {
-            info!("  - Player {:?} joining with name '{}'", player_id, name);
+            info!("Player {:?} joining with name '{}'", player_id, name);
 
             let spawn_pos = TilePosition { x: 0, y: 0 };
             let entity_id = state.next_entity_id;
@@ -284,11 +282,11 @@ pub fn handle_client_message(
                 .insert(player_id, HashSet::new());
 
             info!(
-                "  - Player {:?} '{}' spawned at {:?} with entity_id={}",
+                "Player {:?} '{}' spawned at {:?} with entity_id={}",
                 player_id, name, spawn_pos, entity_id
             );
-            info!("  - Starting inventory: Bronze axe");
-            info!("  - Active players: {}", state.players.len());
+            info!("Starting inventory: Bronze axe");
+            info!("Active players: {}", state.players.len());
 
             let msg = ServerMessage::Welcome {
                 player_id,
@@ -310,7 +308,7 @@ pub fn handle_client_message(
 
             let obstacles: Vec<TilePosition> = state.pathfinder.obstacles.iter().copied().collect();
             info!(
-                "  -  Sending {} obstacles to player {:?}",
+                "Sending {} obstacles to player {:?}",
                 obstacles.len(),
                 player_id
             );
@@ -323,13 +321,12 @@ pub fn handle_client_message(
         ClientMessage::QueueAction { action } => {
             if let Some(player) = state.players.get(&player_id) {
                 info!(
-                    "  - Player {:?} '{}' queuing action: {:?}",
+                    "Player {:?} '{}' queuing action: {:?}",
                     player_id, player.name, action
                 );
 
-                // Validate BEFORE getting mutable borrow
                 if let GameAction::ChopTree { tree_entity_id } = action {
-                    // Check validation in a separate scope
+
                     let validation_result = {
                         let player_entity = state.entities.get(&player.entity_id);
                         let tree_entity = state.entities.get(&tree_entity_id);
@@ -339,23 +336,21 @@ pub fn handle_client_message(
                                 validate_woodcutting_action(p_entity, t_entity, server, player_id)
                             }
                             _ => {
-                                warn!("  - Invalid woodcutting: entity not found (player={}, tree={})",
+                                warn!("Invalid woodcutting: entity not found (player={}, tree={})",
                                     player.entity_id, tree_entity_id);
                                 false
                             }
                         }
-                    }; // Borrows end here
+                    };
 
                     if !validation_result {
                         return;
                     }
                 }
-
-                // Now we can safely get mutable borrow
                 if let Some(entity) = state.entities.get_mut(&player.entity_id) {
                     entity.action_queue.actions.push_back(action.clone());
                     info!(
-                        "  - Action queued for player {:?}. Queue size: {}",
+                        "Action queued for player {:?}. Queue size: {}",
                         player_id,
                         entity.action_queue.actions.len()
                     );
@@ -372,7 +367,7 @@ pub fn handle_client_message(
                     entity.action_queue.current_action = None;
                     entity.action_queue.actions.clear();
                     info!(
-                        "  - Player {:?} '{}' cancelled action. Cleared {} queued actions",
+                        "Player {:?} '{}' cancelled action. Cleared {} queued actions",
                         player_id, player.name, queue_size
                     );
                 }
@@ -381,12 +376,12 @@ pub fn handle_client_message(
 
         ClientMessage::RequestPath { start, goal } => {
             info!(
-                "  -  Player {:?} requesting path from {:?} to {:?}",
+                "Player {:?} requesting path from {:?} to {:?}",
                 player_id, start, goal
             );
 
             if let Some(path) = state.pathfinder.find_path(start, goal) {
-                info!("  - Path found: {} tiles", path.len());
+                info!("Path found: {} tiles", path.len());
                 let msg = ServerMessage::PathFound { path: path.clone() };
                 send_message(server, player_id, &msg);
 
@@ -397,7 +392,7 @@ pub fn handle_client_message(
                     }
                 }
             } else {
-                warn!("  -  No path found from {:?} to {:?}", start, goal);
+                warn!("No path found from {:?} to {:?}", start, goal);
                 let msg = ServerMessage::PathNotFound;
                 send_message(server, player_id, &msg);
             }
@@ -415,20 +410,20 @@ pub fn validate_woodcutting_action(
         Some(t) if !t.is_chopped => t,
         Some(t) if t.is_chopped => {
             warn!(
-                "  -  Player {:?} tried to chop already chopped tree",
+                "Player {:?} tried to chop already chopped tree",
                 player_id
             );
             return false;
         }
         _ => {
-            warn!("  -  Player {:?} tried to chop invalid tree", player_id);
+            warn!("Player {:?} tried to chop invalid tree", player_id);
             return false;
         }
     };
 
     let tree_def = TreeDefinition::get(tree.tree_type);
     info!(
-        "  - Validating woodcutting for player {:?}: tree={:?}, required_level={}",
+        "Validating woodcutting for player {:?}: tree={:?}, required_level={}",
         player_id, tree.tree_type, tree_def.level_required
     );
 
@@ -436,7 +431,7 @@ pub fn validate_woodcutting_action(
         let wc_level = skills.get_level(SkillType::Woodcutting);
         if wc_level < tree_def.level_required {
             warn!(
-                "  -  Player {:?} insufficient level: has {}, needs {}",
+                "Player {:?} insufficient level: has {}, needs {}",
                 player_id, wc_level, tree_def.level_required
             );
             let msg = ServerMessage::NotEnoughLevel {
@@ -447,14 +442,14 @@ pub fn validate_woodcutting_action(
             send_message(server, player_id, &msg);
             return false;
         }
-        info!("  - Level check passed: player has level {}", wc_level);
+        info!("Level check passed: player has level {}", wc_level);
     }
 
     if let Some(ref inventory) = player_entity.inventory {
         if let Some(axe) = inventory.has_any_axe() {
-            info!("  - Axe check passed: player has {:?}", axe);
+            info!("Axe check passed: player has {:?}", axe);
         } else {
-            warn!("  - Player {:?} has no axe", player_id);
+            warn!("Player {:?} has no axe", player_id);
             let msg = ServerMessage::NoAxeEquipped;
             send_message(server, player_id, &msg);
             return false;
@@ -462,7 +457,7 @@ pub fn validate_woodcutting_action(
     }
 
     info!(
-        "  - Woodcutting validation passed for player {:?}",
+        "Woodcutting validation passed for player {:?}",
         player_id
     );
     true
@@ -501,7 +496,7 @@ pub fn process_server_tick(
 
     if !woodcutting_completions.is_empty() {
         info!(
-            "🪓 Processing {} woodcutting completions",
+            "Processing {} woodcutting completions",
             woodcutting_completions.len()
         );
     }
@@ -515,14 +510,14 @@ pub fn process_server_tick(
             entity.action_queue.current_action = None;
 
             if let Some(player_id) = entity.player_id {
-                debug!("  - Action completed for player {:?}", player_id);
+                debug!("Action completed for player {:?}", player_id);
                 let msg = ServerMessage::ActionCompleted { entity_id };
                 send_message(server, player_id, &msg);
             }
         }
     }
 
-    // Update tree respawn timers
+    // update tree respawn timers
     let mut respawned_trees = Vec::new();
     for (tree_entity_id, tree_entity) in state.entities.iter_mut() {
         if let Some(ref mut tree) = tree_entity.tree {
@@ -545,7 +540,7 @@ pub fn process_server_tick(
     }
 
     for (tree_id, tree_type) in respawned_trees {
-        info!("  - Tree {} ({:?}) respawned", tree_id, tree_type);
+        info!("Tree {} ({:?}) respawned", tree_id, tree_type);
     }
 
     for (player_id, _) in state.players.iter() {
@@ -609,7 +604,7 @@ pub fn handle_woodcutting_completion(
         if let Some(ref tree) = tree_entity.tree {
             let def = TreeDefinition::get(tree.tree_type);
             info!(
-                "  - Processing woodcutting completion: tree={:?}, xp={}, logs={:?}",
+                "Processing woodcutting completion: tree={:?}, xp={}, logs={:?}",
                 tree.tree_type, def.experience, def.logs_given
             );
             def
@@ -625,7 +620,7 @@ pub fn handle_woodcutting_completion(
             tree.is_chopped = true;
             tree.respawn_timer = 0.0;
             info!(
-                "  - Tree {} chopped! Will respawn in {}s",
+                "Tree {} chopped! Will respawn in {}s",
                 tree_entity_id, tree_def.respawn_time
             );
         }
@@ -645,7 +640,7 @@ pub fn handle_woodcutting_completion(
         if inventory.add_item(tree_def.logs_given, 1) {
             let def = ItemDefinition::get(tree_def.logs_given);
             info!(
-                "  - Player {:?} received: {} x1 (total: {})",
+                "Player {:?} received: {} x1 (total: {})",
                 player_id,
                 def.name,
                 inventory.count_item(tree_def.logs_given)
@@ -663,7 +658,7 @@ pub fn handle_woodcutting_completion(
             send_message(server, player_id, &inv_msg);
         } else {
             warn!(
-                "  -  Player {:?} inventory full! Could not add logs",
+                " Player {:?} inventory full! Could not add logs",
                 player_id
             );
         }
@@ -676,7 +671,7 @@ pub fn handle_woodcutting_completion(
         let new_xp = skills.get_experience(SkillType::Woodcutting);
 
         info!(
-            "  - Player {:?} gained {} Woodcutting XP ({} -> {})",
+            "Player {:?} gained {} Woodcutting XP ({} -> {})",
             player_id, tree_def.experience, old_xp, new_xp
         );
 
@@ -696,7 +691,7 @@ pub fn handle_woodcutting_completion(
 
         if leveled_up {
             info!(
-                "  - LEVEL UP! Player {:?} Woodcutting: {} -> {}",
+                "LEVEL UP! Player {:?} Woodcutting: {} -> {}",
                 player_id, old_level, skill_data.level
             );
             let levelup_msg = ServerMessage::LevelUp {
@@ -717,7 +712,7 @@ pub fn handle_woodcutting_completion(
     let chopped_msg = ServerMessage::TreeChopped { tree_entity_id };
     broadcast_message(server, &chopped_msg);
     info!(
-        "  - Broadcasted tree {} chopped to all players",
+        "Broadcasted tree {} chopped to all players",
         tree_entity_id
     );
 }
@@ -822,7 +817,7 @@ pub fn send_delta_updates(
     for (player_id, deltas) in client_deltas {
         if !deltas.is_empty() {
             debug!(
-                "  - Sending {} deltas to player {:?}",
+                "Sending {} deltas to player {:?}",
                 deltas.len(),
                 player_id
             );
@@ -862,7 +857,7 @@ pub fn send_message(server: &mut RenetServer, player_id: PlayerId, msg: &ServerM
 
     let msg_bytes = bincode::serialize(msg).unwrap();
     debug!(
-        "  - Sending {} to player {:?} ({} bytes)",
+        "Sending {} to player {:?} ({} bytes)",
         msg_type,
         player_id,
         msg_bytes.len()
@@ -884,7 +879,7 @@ pub fn broadcast_message(server: &mut RenetServer, msg: &ServerMessage) {
 
     let msg_bytes = bincode::serialize(msg).unwrap();
     debug!(
-        "  - Broadcasting {} to all players ({} bytes)",
+        "Broadcasting {} to all players ({} bytes)",
         msg_type,
         msg_bytes.len()
     );
