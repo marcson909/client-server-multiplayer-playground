@@ -60,7 +60,7 @@ pub struct PendingInput {
 
 #[derive(Clone, Debug)]
 pub struct PositionSnapshot {
-    pub timestamp: f64,  // time in seconds since startup
+    pub timestamp: f64, // time in seconds since startup
     pub position: TilePosition,
 }
 

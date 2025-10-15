@@ -11,7 +11,9 @@ use shared::tile_system::TilePosition;
 use shared::trees::{TreeDefinition, TreeType};
 use shared::*;
 
-use crate::{ClientEntity, ClientState, LocalPlayer, NetworkedEntity, PendingInput, PositionSnapshot};
+use crate::{
+    ClientEntity, ClientState, LocalPlayer, NetworkedEntity, PendingInput, PositionSnapshot,
+};
 
 pub fn client_update_system(
     mut client: ResMut<RenetClient>,
@@ -190,17 +192,17 @@ pub fn handle_mouse_pathfinding(
                                 tree_def.level_required, tree_def.experience
                             );
 
-                            // Cancel any current action first
+                            // cancel any current action first
                             let cancel_msg = ClientMessage::CancelAction;
                             let cancel_bytes = bincode::serialize(&cancel_msg).unwrap();
                             client.send_message(DefaultChannel::ReliableOrdered, cancel_bytes);
 
-                            // Check if we need to move to the tree first
+                            // check if we need to move to the tree first
                             if let Some(my_entity_id) = state.my_entity_id {
                                 if let Some(my_entity) = state.visible_entities.get(&my_entity_id) {
                                     let my_pos = my_entity.tile_position;
 
-                                    // Check if we're adjacent to the tree (within 1 tile, including diagonals)
+                                    // check if we're adjacent to the tree (within 1 tile, including diagonals)
                                     let dx = (my_pos.x - tree_pos.x).abs();
                                     let dy = (my_pos.y - tree_pos.y).abs();
                                     let is_adjacent = dx <= 1 && dy <= 1 && !(dx == 0 && dy == 0);
@@ -209,7 +211,6 @@ pub fn handle_mouse_pathfinding(
                                     state.input_sequence_number += 1;
 
                                     if is_adjacent {
-                                        // We're adjacent, just chop
                                         info!("Adjacent to tree, chopping directly");
 
                                         let action = GameAction::ChopTree {
@@ -221,23 +222,26 @@ pub fn handle_mouse_pathfinding(
                                             input_sequence_number,
                                         };
                                         let msg_bytes = bincode::serialize(&msg).unwrap();
-                                        client.send_message(DefaultChannel::ReliableOrdered, msg_bytes);
+                                        client.send_message(
+                                            DefaultChannel::ReliableOrdered,
+                                            msg_bytes,
+                                        );
 
                                         state.pending_inputs.push(PendingInput {
                                             input_sequence_number,
                                             action,
                                         });
                                     } else {
-                                        // Need to move to tree first, then chop
                                         info!("Not adjacent to tree, will move then chop");
-
-                                        // Find an adjacent walkable tile
+                                        // find an adjacent walkable tile
                                         let mut best_adjacent: Option<TilePosition> = None;
                                         let mut min_distance = i32::MAX;
 
                                         for dx in -1..=1 {
                                             for dy in -1..=1 {
-                                                if dx == 0 && dy == 0 { continue; }
+                                                if dx == 0 && dy == 0 {
+                                                    continue;
+                                                }
 
                                                 let adjacent = TilePosition {
                                                     x: tree_pos.x + dx,
@@ -245,7 +249,8 @@ pub fn handle_mouse_pathfinding(
                                                 };
 
                                                 if state.pathfinder.is_walkable(&adjacent) {
-                                                    let dist = (adjacent.x - my_pos.x).abs() + (adjacent.y - my_pos.y).abs();
+                                                    let dist = (adjacent.x - my_pos.x).abs()
+                                                        + (adjacent.y - my_pos.y).abs();
                                                     if dist < min_distance {
                                                         min_distance = dist;
                                                         best_adjacent = Some(adjacent);
@@ -255,26 +260,41 @@ pub fn handle_mouse_pathfinding(
                                         }
 
                                         if let Some(move_to) = best_adjacent {
-                                            // Find path to adjacent tile
-                                            if let Some(path) = state.pathfinder.find_path_a_star(my_pos, move_to) {
-                                                let move_action = GameAction::Move { path: path.clone() };
+                                            // find path to adjacent tile
+                                            if let Some(path) =
+                                                state.pathfinder.find_path_a_star(my_pos, move_to)
+                                            {
+                                                let move_action =
+                                                    GameAction::Move { path: path.clone() };
                                                 let chop_action = GameAction::ChopTree {
                                                     tree_entity_id: hover_entity_id,
                                                 };
 
-                                                // Send both actions as a chain
+                                                // send both actions as a chain
                                                 let msg = ClientMessage::QueueActions {
                                                     actions: vec![move_action.clone(), chop_action],
                                                     input_sequence_number,
                                                 };
                                                 let msg_bytes = bincode::serialize(&msg).unwrap();
-                                                client.send_message(DefaultChannel::ReliableOrdered, msg_bytes);
+                                                client.send_message(
+                                                    DefaultChannel::ReliableOrdered,
+                                                    msg_bytes,
+                                                );
 
-                                                // For prediction, predict the movement
+                                                // predict the movement
                                                 if state.client_side_prediction {
-                                                    if let Some(my_entity_mut) = state.visible_entities.get_mut(&my_entity_id) {
-                                                        apply_action_to_position(&move_action, &mut my_entity_mut.tile_position);
-                                                        debug!("Predicted move to: {:?}", my_entity_mut.tile_position);
+                                                    if let Some(my_entity_mut) = state
+                                                        .visible_entities
+                                                        .get_mut(&my_entity_id)
+                                                    {
+                                                        apply_action_to_position(
+                                                            &move_action,
+                                                            &mut my_entity_mut.tile_position,
+                                                        );
+                                                        debug!(
+                                                            "Predicted move to: {:?}",
+                                                            my_entity_mut.tile_position
+                                                        );
                                                     }
                                                 }
 
@@ -285,7 +305,10 @@ pub fn handle_mouse_pathfinding(
 
                                                 state.confirmed_path = Some(path);
 
-                                                info!("Queued: Move to {:?} then chop tree", move_to);
+                                                info!(
+                                                    "Queued: Move to {:?} then chop tree",
+                                                    move_to
+                                                );
                                             } else {
                                                 warn!("No path found to tree!");
                                             }
@@ -473,10 +496,7 @@ pub fn handle_server_message_reliable(
             required,
             current,
         } => {
-            warn!(
-                "Need level {} {:?} (current: {})",
-                required, skill, current
-            );
+            warn!("Need level {} {:?} (current: {})", required, skill, current);
         }
 
         ServerMessage::NoAxeEquipped => {
@@ -530,7 +550,10 @@ pub fn handle_server_message_unreliable(msg: ServerMessage, state: &mut ClientSt
                         state.pending_move = None;
                     }
                 }
-                DeltaType::PositionOnly { tile_pos, last_processed_input } => {
+                DeltaType::PositionOnly {
+                    tile_pos,
+                    last_processed_input,
+                } => {
                     let is_my_entity = Some(delta.entity_id) == state.my_entity_id;
                     let current_time = time.elapsed_seconds_f64();
 
@@ -583,7 +606,9 @@ pub fn handle_server_message_unreliable(msg: ServerMessage, state: &mut ClientSt
 /// server reconciliation: re-apply inputs that the server hasn't processed yet
 fn reconcile_client_state(state: &mut ClientState, entity_id: u64, last_processed_input: u32) {
     // remove all inputs that have been processed by the server
-    state.pending_inputs.retain(|input| input.input_sequence_number > last_processed_input);
+    state
+        .pending_inputs
+        .retain(|input| input.input_sequence_number > last_processed_input);
 
     info!(
         "Reconciliation: server processed up to input #{}, {} inputs remaining",
@@ -719,7 +744,9 @@ pub fn interpolate_entities(mut client_state: ResMut<ClientState>, time: Res<Tim
         let mut p1: Option<&PositionSnapshot> = None;
 
         for i in 0..buffer.len() - 1 {
-            if buffer[i].timestamp <= render_timestamp && render_timestamp <= buffer[i + 1].timestamp {
+            if buffer[i].timestamp <= render_timestamp
+                && render_timestamp <= buffer[i + 1].timestamp
+            {
                 p0 = Some(&buffer[i]);
                 p1 = Some(&buffer[i + 1]);
                 break;

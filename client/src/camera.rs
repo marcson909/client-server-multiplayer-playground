@@ -70,11 +70,7 @@ pub fn draw_netcode_ghosts(mut gizmos: Gizmos, client_state: Res<ClientState>) {
                 // line from server position to predicted position
                 let predicted_pos = my_entity.tile_position.to_world();
                 if server_pos != predicted_pos {
-                    gizmos.line_2d(
-                        server_pos,
-                        predicted_pos,
-                        Color::srgba(1.0, 1.0, 0.0, 0.7),
-                    );
+                    gizmos.line_2d(server_pos, predicted_pos, Color::srgba(1.0, 1.0, 0.0, 0.7));
                 }
 
                 // label
@@ -104,26 +100,14 @@ pub fn draw_netcode_ghosts(mut gizmos: Gizmos, client_state: Res<ClientState>) {
 
                 // draw first position (oldest)
                 let pos0 = buffer[0].position.to_world();
-                gizmos.circle_2d(
-                    pos0,
-                    TILE_SIZE * 0.3,
-                    Color::srgba(1.0, 0.5, 0.0, 0.4),
-                );
+                gizmos.circle_2d(pos0, TILE_SIZE * 0.3, Color::srgba(1.0, 0.5, 0.0, 0.4));
 
                 // draw last position (newest)
                 let pos1 = buffer[buffer.len() - 1].position.to_world();
-                gizmos.circle_2d(
-                    pos1,
-                    TILE_SIZE * 0.3,
-                    Color::srgba(0.0, 1.0, 0.5, 0.4),
-                );
+                gizmos.circle_2d(pos1, TILE_SIZE * 0.3, Color::srgba(0.0, 1.0, 0.5, 0.4));
 
                 // line between them
-                gizmos.line_2d(
-                    pos0,
-                    pos1,
-                    Color::srgba(0.5, 0.5, 0.5, 0.3),
-                );
+                gizmos.line_2d(pos0, pos1, Color::srgba(0.5, 0.5, 0.5, 0.3));
 
                 // show interpolated position
                 if let Some(interp_pos) = entity.interpolated_position {

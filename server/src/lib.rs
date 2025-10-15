@@ -215,7 +215,11 @@ pub fn server_update_system(
                         ClientMessage::QueueActions {
                             actions,
                             input_sequence_number,
-                        } => format!("QueueActions([{} actions], seq={})", actions.len(), input_sequence_number),
+                        } => format!(
+                            "QueueActions([{} actions], seq={})",
+                            actions.len(),
+                            input_sequence_number
+                        ),
                         ClientMessage::CancelAction => "CancelAction".to_string(),
                         ClientMessage::RequestPath { start, goal } =>
                             format!("RequestPath({:?} -> {:?})", start, goal),
@@ -346,7 +350,11 @@ pub fn handle_client_message(
             if let Some(player) = state.players.get(&player_id) {
                 info!(
                     "Player {:?} '{}' queuing action: {:?} (priority: {:?}, input #{})",
-                    player_id, player.name, action, action.priority(), input_sequence_number
+                    player_id,
+                    player.name,
+                    action,
+                    action.priority(),
+                    input_sequence_number
                 );
                 if let GameAction::ChopTree { tree_entity_id } = action {
                     let validation_result = {
@@ -358,8 +366,10 @@ pub fn handle_client_message(
                                 validate_woodcutting_action(p_entity, t_entity, server, player_id)
                             }
                             _ => {
-                                warn!("Invalid woodcutting: entity not found (player={}, tree={})",
-                                    player.entity_id, tree_entity_id);
+                                warn!(
+                                    "Invalid woodcutting: entity not found (player={}, tree={})",
+                                    player.entity_id, tree_entity_id
+                                );
                                 false
                             }
                         }
@@ -385,13 +395,18 @@ pub fn handle_client_message(
                             info!("  → Action started immediately");
                         }
                         QueueResult::Queued => {
-                            info!("  → Action queued (queue size: {})", entity.action_queue.actions.len());
+                            info!(
+                                "  → Action queued (queue size: {})",
+                                entity.action_queue.actions.len()
+                            );
                         }
                         QueueResult::ReplacedSameType => {
                             info!("  → Replaced in-progress action of same type (RuneScape-style)");
                         }
                         QueueResult::CancelledAndStarted => {
-                            info!("  → Cancelled weak action and started (priority: Normal > Weak)");
+                            info!(
+                                "  → Cancelled weak action and started (priority: Normal > Weak)"
+                            );
                         }
                         QueueResult::Suspended => {
                             info!("  → Suspended normal action (priority: Strong)");
@@ -414,7 +429,10 @@ pub fn handle_client_message(
             if let Some(player) = state.players.get(&player_id) {
                 info!(
                     "Player {:?} '{}' queuing {} actions (input #{})",
-                    player_id, player.name, actions.len(), input_sequence_number
+                    player_id,
+                    player.name,
+                    actions.len(),
+                    input_sequence_number
                 );
 
                 let mut all_valid = true;
@@ -425,9 +443,9 @@ pub fn handle_client_message(
                             let tree_entity = state.entities.get(tree_entity_id);
 
                             match (player_entity, tree_entity) {
-                                (Some(p_entity), Some(t_entity)) => {
-                                    validate_woodcutting_action(p_entity, t_entity, server, player_id)
-                                }
+                                (Some(p_entity), Some(t_entity)) => validate_woodcutting_action(
+                                    p_entity, t_entity, server, player_id,
+                                ),
                                 _ => {
                                     warn!("Invalid woodcutting: entity not found (player={}, tree={})",
                                         player.entity_id, tree_entity_id);
@@ -452,7 +470,11 @@ pub fn handle_client_message(
                             first_action.clone(),
                             current_time,
                         );
-                        info!("  First action ({:?}): {:?}", first_action.priority(), result);
+                        info!(
+                            "  First action ({:?}): {:?}",
+                            first_action.priority(),
+                            result
+                        );
 
                         for action in &actions[1..] {
                             if entity.action_queue.actions.len() < 1 {
@@ -482,8 +504,14 @@ pub fn handle_client_message(
                     entity.action_queue.actions.clear();
                     info!(
                         "Player {:?} '{}' cancelled action. Cleared {} queued actions{}",
-                        player_id, player.name, queue_size,
-                        if has_current { " and current action" } else { "" }
+                        player_id,
+                        player.name,
+                        queue_size,
+                        if has_current {
+                            " and current action"
+                        } else {
+                            ""
+                        }
                     );
                 }
             }
@@ -523,10 +551,7 @@ pub fn validate_woodcutting_action(
     let tree = match &tree_entity.tree {
         Some(t) if !t.is_chopped => t,
         Some(t) if t.is_chopped => {
-            warn!(
-                "Player {:?} tried to chop already chopped tree",
-                player_id
-            );
+            warn!("Player {:?} tried to chop already chopped tree", player_id);
             return false;
         }
         _ => {
@@ -570,10 +595,7 @@ pub fn validate_woodcutting_action(
         }
     }
 
-    info!(
-        "Woodcutting validation passed for player {:?}",
-        player_id
-    );
+    info!("Woodcutting validation passed for player {:?}", player_id);
     true
 }
 
@@ -709,12 +731,12 @@ pub fn process_action_queue(
 
 #[derive(Debug)]
 pub enum QueueResult {
-    Started,                  // action started immediately
-    Queued,                   // action queued for later
-    ReplacedSameType,         // replaced in-progress action of same type
-    CancelledAndStarted,      // cancelled lower priority action and started
-    Suspended,                // suspended normal action (by strong action)
-    QueueFull,                // queue is full (max 1 queued action)
+    Started,             // action started immediately
+    Queued,              // action queued for later
+    ReplacedSameType,    // replaced in-progress action of same type
+    CancelledAndStarted, // cancelled lower priority action and started
+    Suspended,           // suspended normal action (by strong action)
+    QueueFull,           // queue is full (max 1 queued action)
 }
 
 /// handles adding a new action to the queue with priority-based cancellation
@@ -746,7 +768,8 @@ pub fn queue_action_with_priority(
 
         // Normal actions cancel Weak actions
         if new_priority == shared::actions::ActionPriority::Normal
-            && current_priority == shared::actions::ActionPriority::Weak {
+            && current_priority == shared::actions::ActionPriority::Weak
+        {
             queue.current_action = None;
             queue.actions.clear();
             start_action(queue, tile_pos, new_action, current_time);
@@ -773,7 +796,12 @@ pub fn queue_action_with_priority(
     QueueResult::Started
 }
 
-fn start_action(queue: &mut ActionQueue, tile_pos: &mut TilePosition, action: GameAction, current_time: f64) {
+fn start_action(
+    queue: &mut ActionQueue,
+    tile_pos: &mut TilePosition,
+    action: GameAction,
+    current_time: f64,
+) {
     let duration = action.duration_seconds();
     let start_index = match &action {
         GameAction::Move { path } => {
@@ -859,10 +887,7 @@ pub fn handle_woodcutting_completion(
             };
             send_message(server, player_id, &inv_msg);
         } else {
-            warn!(
-                " Player {:?} inventory full! Could not add logs",
-                player_id
-            );
+            warn!(" Player {:?} inventory full! Could not add logs", player_id);
         }
     }
 
@@ -913,10 +938,7 @@ pub fn handle_woodcutting_completion(
 
     let chopped_msg = ServerMessage::TreeChopped { tree_entity_id };
     broadcast_message(server, &chopped_msg);
-    info!(
-        "Broadcasted tree {} chopped to all players",
-        tree_entity_id
-    );
+    info!("Broadcasted tree {} chopped to all players", tree_entity_id);
 }
 
 pub fn update_interest_for_player(
@@ -1021,11 +1043,7 @@ pub fn send_delta_updates(
 
     for (player_id, deltas) in client_deltas {
         if !deltas.is_empty() {
-            debug!(
-                "Sending {} deltas to player {:?}",
-                deltas.len(),
-                player_id
-            );
+            debug!("Sending {} deltas to player {:?}", deltas.len(), player_id);
             let msg = ServerMessage::DeltaUpdate { tick, deltas };
             let msg_bytes = bincode::serialize(&msg).unwrap();
             server.send_message(

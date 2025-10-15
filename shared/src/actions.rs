@@ -6,9 +6,9 @@ use crate::{tile_system::TilePosition, PlayerId, TICK_RATE};
 /// Strong > Normal > Weak
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ActionPriority {
-    Weak = 0,    // gathering, repeating actions (cancelled by movement)
-    Normal = 1,  // movement, combat, item use (can be replaced by same type)
-    Strong = 2,  // teleports, damage, forced actions (cancels everything)
+    Weak = 0,   // gathering, repeating actions (cancelled by movement)
+    Normal = 1, // movement, combat, item use (can be replaced by same type)
+    Strong = 2, // teleports, damage, forced actions (cancels everything)
 }
 
 impl ActionPriority {
@@ -47,11 +47,11 @@ impl GameAction {
     /// get the base tick delay for this action in ticks
     pub fn tick_delay(&self) -> u32 {
         match self {
-            GameAction::Move { .. } => 1,        // 1 tick per tile (0.6s)
-            GameAction::Attack { .. } => 4,      // 4 ticks (2.4s) - typical weapon speed
-            GameAction::UseItem { .. } => 1,     // 1 tick (0.6s) - eat/drink
-            GameAction::Interact { .. } => 2,    // 2 ticks (1.2s) - interact delay
-            GameAction::ChopTree { .. } => 4,    // 4 ticks (2.4s) - chop attempt
+            GameAction::Move { .. } => 1,     // 1 tick per tile (0.6s)
+            GameAction::Attack { .. } => 4,   // 4 ticks (2.4s) - typical weapon speed
+            GameAction::UseItem { .. } => 1,  // 1 tick (0.6s) - eat/drink
+            GameAction::Interact { .. } => 2, // 2 ticks (1.2s) - interact delay
+            GameAction::ChopTree { .. } => 4, // 4 ticks (2.4s) - chop attempt
         }
     }
 
