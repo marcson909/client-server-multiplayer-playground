@@ -401,7 +401,7 @@ pub fn handle_client_message(
                             );
                         }
                         QueueResult::ReplacedSameType => {
-                            info!("  → Replaced in-progress action of same type (RuneScape-style)");
+                            info!("  → Replaced in-progress action of same type");
                         }
                         QueueResult::CancelledAndStarted => {
                             info!(
