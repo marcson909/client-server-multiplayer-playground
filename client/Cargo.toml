@@ -10,3 +10,4 @@ bevy_renet = { workspace = true, features = ["transport"] }
 renet = { workspace = true, features = ["transport"] }
 serde = { workspace = true }
 bincode = { workspace = true }
+bevy_egui = "0.28"

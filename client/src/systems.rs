@@ -4,14 +4,14 @@ use bevy_renet::renet::*;
 use shared::actions::GameAction;
 
 use shared::items::ItemDefinition;
-use shared::netcode::{ClientMessage, DeltaType, EntitySnapshot, ServerMessage};
+use shared::messages::{ClientMessage, DeltaType, EntitySnapshot, ServerMessage};
 
 use shared::skills::SkillData;
 use shared::tile_system::TilePosition;
 use shared::trees::{TreeDefinition, TreeType};
 use shared::*;
 
-use crate::{ClientEntity, ClientState, LocalPlayer, NetworkedEntity};
+use crate::{ClientEntity, ClientState, LocalPlayer, NetworkedEntity, PendingInput, PositionSnapshot};
 
 pub fn client_update_system(
     mut client: ResMut<RenetClient>,
@@ -20,6 +20,7 @@ pub fn client_update_system(
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform)>,
+    time: Res<Time>,
     mut commands: Commands,
 ) {
     if client.is_connected() && !client_state.join_sent && client_state.my_player_id.is_none() {
@@ -61,7 +62,7 @@ pub fn client_update_system(
     while let Some(message) = client.receive_message(DefaultChannel::Unreliable) {
         debug!("Received unreliable message: {} bytes", message.len());
         if let Ok(server_msg) = bincode::deserialize::<ServerMessage>(&message) {
-            handle_server_message_unreliable(server_msg, &mut client_state);
+            handle_server_message_unreliable(server_msg, &mut client_state, &time);
         }
     }
 }
@@ -117,10 +118,31 @@ pub fn handle_tile_movement_input(
         }
 
         info!("Moving {} from {:?} to {:?}", direction, my_pos, pos);
+
+        // Server will automatically replace any in-progress move action
         let action = GameAction::Move { path: vec![pos] };
-        let msg = ClientMessage::QueueAction { action };
+        let input_sequence_number = state.input_sequence_number;
+        state.input_sequence_number += 1;
+        let msg = ClientMessage::QueueAction {
+            action: action.clone(),
+            input_sequence_number,
+        };
         let msg_bytes = bincode::serialize(&msg).unwrap();
         client.send_message(DefaultChannel::ReliableOrdered, msg_bytes);
+
+        // client-side prediction: apply the input immediately
+        if state.client_side_prediction {
+            if let Some(my_entity) = state.visible_entities.get_mut(&my_entity_id) {
+                apply_action_to_position(&action, &mut my_entity.tile_position);
+                debug!("Predicted position: {:?}", my_entity.tile_position);
+            }
+        }
+
+        // store this input for later reconciliation
+        state.pending_inputs.push(PendingInput {
+            input_sequence_number,
+            action,
+        });
 
         state.path_preview = None;
         state.confirmed_path = None;
@@ -157,21 +179,123 @@ pub fn handle_mouse_pathfinding(
                     if let Some(ref tree) = entity.tree {
                         if !tree.is_chopped {
                             let tree_def = TreeDefinition::get(tree.tree_type);
+                            let tree_pos = entity.tile_position;
+
                             info!(
                                 "Click: Attempting to chop {:?} at {:?}",
-                                tree.tree_type, entity.tile_position
+                                tree.tree_type, tree_pos
                             );
                             info!(
                                 "Required level: {}, XP: {}",
                                 tree_def.level_required, tree_def.experience
                             );
 
-                            let action = GameAction::ChopTree {
-                                tree_entity_id: hover_entity_id,
-                            };
-                            let msg = ClientMessage::QueueAction { action };
-                            let msg_bytes = bincode::serialize(&msg).unwrap();
-                            client.send_message(DefaultChannel::ReliableOrdered, msg_bytes);
+                            // Cancel any current action first
+                            let cancel_msg = ClientMessage::CancelAction;
+                            let cancel_bytes = bincode::serialize(&cancel_msg).unwrap();
+                            client.send_message(DefaultChannel::ReliableOrdered, cancel_bytes);
+
+                            // Check if we need to move to the tree first
+                            if let Some(my_entity_id) = state.my_entity_id {
+                                if let Some(my_entity) = state.visible_entities.get(&my_entity_id) {
+                                    let my_pos = my_entity.tile_position;
+
+                                    // Check if we're adjacent to the tree (within 1 tile, including diagonals)
+                                    let dx = (my_pos.x - tree_pos.x).abs();
+                                    let dy = (my_pos.y - tree_pos.y).abs();
+                                    let is_adjacent = dx <= 1 && dy <= 1 && !(dx == 0 && dy == 0);
+
+                                    let input_sequence_number = state.input_sequence_number;
+                                    state.input_sequence_number += 1;
+
+                                    if is_adjacent {
+                                        // We're adjacent, just chop
+                                        info!("Adjacent to tree, chopping directly");
+
+                                        let action = GameAction::ChopTree {
+                                            tree_entity_id: hover_entity_id,
+                                        };
+
+                                        let msg = ClientMessage::QueueAction {
+                                            action: action.clone(),
+                                            input_sequence_number,
+                                        };
+                                        let msg_bytes = bincode::serialize(&msg).unwrap();
+                                        client.send_message(DefaultChannel::ReliableOrdered, msg_bytes);
+
+                                        state.pending_inputs.push(PendingInput {
+                                            input_sequence_number,
+                                            action,
+                                        });
+                                    } else {
+                                        // Need to move to tree first, then chop
+                                        info!("Not adjacent to tree, will move then chop");
+
+                                        // Find an adjacent walkable tile
+                                        let mut best_adjacent: Option<TilePosition> = None;
+                                        let mut min_distance = i32::MAX;
+
+                                        for dx in -1..=1 {
+                                            for dy in -1..=1 {
+                                                if dx == 0 && dy == 0 { continue; }
+
+                                                let adjacent = TilePosition {
+                                                    x: tree_pos.x + dx,
+                                                    y: tree_pos.y + dy,
+                                                };
+
+                                                if state.pathfinder.is_walkable(&adjacent) {
+                                                    let dist = (adjacent.x - my_pos.x).abs() + (adjacent.y - my_pos.y).abs();
+                                                    if dist < min_distance {
+                                                        min_distance = dist;
+                                                        best_adjacent = Some(adjacent);
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if let Some(move_to) = best_adjacent {
+                                            // Find path to adjacent tile
+                                            if let Some(path) = state.pathfinder.find_path_a_star(my_pos, move_to) {
+                                                let move_action = GameAction::Move { path: path.clone() };
+                                                let chop_action = GameAction::ChopTree {
+                                                    tree_entity_id: hover_entity_id,
+                                                };
+
+                                                // Send both actions as a chain
+                                                let msg = ClientMessage::QueueActions {
+                                                    actions: vec![move_action.clone(), chop_action],
+                                                    input_sequence_number,
+                                                };
+                                                let msg_bytes = bincode::serialize(&msg).unwrap();
+                                                client.send_message(DefaultChannel::ReliableOrdered, msg_bytes);
+
+                                                // For prediction, predict the movement
+                                                if state.client_side_prediction {
+                                                    if let Some(my_entity_mut) = state.visible_entities.get_mut(&my_entity_id) {
+                                                        apply_action_to_position(&move_action, &mut my_entity_mut.tile_position);
+                                                        debug!("Predicted move to: {:?}", my_entity_mut.tile_position);
+                                                    }
+                                                }
+
+                                                state.pending_inputs.push(PendingInput {
+                                                    input_sequence_number,
+                                                    action: move_action,
+                                                });
+
+                                                state.confirmed_path = Some(path);
+
+                                                info!("Queued: Move to {:?} then chop tree", move_to);
+                                            } else {
+                                                warn!("No path found to tree!");
+                                            }
+                                        } else {
+                                            warn!("No walkable tiles adjacent to tree!");
+                                        }
+                                    }
+                                }
+                            }
+
                             return;
                         } else {
                             debug!("Tree already chopped, waiting for respawn");
@@ -200,93 +324,7 @@ pub fn handle_mouse_pathfinding(
                     if let Some(my_entity) = state.visible_entities.get(&my_entity_id) {
                         state.path_preview = state
                             .pathfinder
-                            .find_path(my_entity.tile_position, target_tile);
-                    }
-                }
-            } else {
-                state.path_preview = None;
-            }
-        }
-    } else {
-        state.path_preview = None;
-        state.hover_entity = None;
-    }
-}
-
-pub fn handle_pathfinding_update(
-    mouse: &ButtonInput<MouseButton>,
-    window: &Window,
-    camera: &Camera,
-    camera_transform: &GlobalTransform,
-    client: &mut RenetClient,
-    state: &mut ClientState,
-) {
-    let cursor_pos = window
-        .cursor_position()
-        .and_then(|cursor| camera.viewport_to_world(camera_transform, cursor))
-        .map(|ray| ray.origin.truncate());
-
-    if let Some(world_pos) = cursor_pos {
-        let target_tile = TilePosition::from_world(world_pos);
-
-        state.hover_entity = None;
-        for (entity_id, entity) in &state.visible_entities {
-            if entity.tile_position == target_tile && entity.tree.is_some() {
-                state.hover_entity = Some(*entity_id);
-                break;
-            }
-        }
-
-        if mouse.just_pressed(MouseButton::Left) {
-            if let Some(hover_entity_id) = state.hover_entity {
-                if let Some(entity) = state.visible_entities.get(&hover_entity_id) {
-                    if let Some(ref tree) = entity.tree {
-                        if !tree.is_chopped {
-                            let tree_def = TreeDefinition::get(tree.tree_type);
-                            info!(
-                                "Click: Attempting to chop {:?} at {:?}",
-                                tree.tree_type, entity.tile_position
-                            );
-                            info!(
-                                "Required level: {}, XP: {}",
-                                tree_def.level_required, tree_def.experience
-                            );
-
-                            let action = GameAction::ChopTree {
-                                tree_entity_id: hover_entity_id,
-                            };
-                            let msg = ClientMessage::QueueAction { action };
-                            let msg_bytes = bincode::serialize(&msg).unwrap();
-                            client.send_message(DefaultChannel::ReliableOrdered, msg_bytes);
-                            return;
-                        } else {
-                            debug!("Tree already chopped, waiting for respawn");
-                        }
-                    }
-                }
-            }
-
-            if let Some(my_entity_id) = state.my_entity_id {
-                if let Some(my_entity) = state.visible_entities.get(&my_entity_id) {
-                    info!(
-                        "Click: Requesting path from {:?} to {:?}",
-                        my_entity.tile_position, target_tile
-                    );
-                    let msg = ClientMessage::RequestPath {
-                        start: my_entity.tile_position,
-                        goal: target_tile,
-                    };
-                    let msg_bytes = bincode::serialize(&msg).unwrap();
-                    client.send_message(DefaultChannel::ReliableOrdered, msg_bytes);
-                }
-            }
-        } else {
-            if state.hover_entity.is_none() {
-                if let Some(my_entity_id) = state.my_entity_id {
-                    if let Some(my_entity) = state.visible_entities.get(&my_entity_id) {
-                        state.path_preview = state
-                            .pathfinder
-                            .find_path(my_entity.tile_position, target_tile);
+                            .find_path_a_star(my_entity.tile_position, target_tile);
                     }
                 }
             } else {
@@ -449,48 +487,118 @@ pub fn handle_server_message_reliable(
     }
 }
 
-pub fn handle_server_message_unreliable(msg: ServerMessage, state: &mut ClientState) {
+pub fn handle_server_message_unreliable(msg: ServerMessage, state: &mut ClientState, time: &Time) {
     if let ServerMessage::DeltaUpdate { tick: _, deltas } = msg {
         for delta in deltas {
             match delta.delta_type {
                 DeltaType::FullState {
                     tile_pos,
                     player_id,
+                    last_processed_input,
                 } => {
+                    let is_my_player = player_id == state.my_player_id;
+                    let current_time = time.elapsed_seconds_f64();
+
                     if let Some(entity) = state.visible_entities.get_mut(&delta.entity_id) {
-                        entity.tile_position = tile_pos;
+                        entity.server_position = tile_pos;
                         entity.player_id = player_id;
 
-                        if player_id == state.my_player_id {
+                        if is_my_player {
                             state.my_entity_id = Some(delta.entity_id);
-                            state.pending_move = None;
+                            entity.tile_position = tile_pos;
+                        } else {
+                            // other player - add to position buffer for interpolation
+                            if state.entity_interpolation {
+                                entity.position_buffer.push(PositionSnapshot {
+                                    timestamp: current_time,
+                                    position: tile_pos,
+                                });
+                            } else {
+                                entity.tile_position = tile_pos;
+                            }
                         }
                     }
+
+                    if is_my_player {
+                        if state.server_reconciliation {
+                            if let Some(last_input) = last_processed_input {
+                                reconcile_client_state(state, delta.entity_id, last_input);
+                            }
+                        } else {
+                            state.pending_inputs.clear();
+                        }
+                        state.pending_move = None;
+                    }
                 }
-                DeltaType::PositionOnly { tile_pos } => {
+                DeltaType::PositionOnly { tile_pos, last_processed_input } => {
+                    let is_my_entity = Some(delta.entity_id) == state.my_entity_id;
+                    let current_time = time.elapsed_seconds_f64();
+
                     if let Some(entity) = state.visible_entities.get_mut(&delta.entity_id) {
-                        entity.tile_position = tile_pos;
+                        entity.server_position = tile_pos;
 
-                        if Some(delta.entity_id) == state.my_entity_id {
-                            state.pending_move = None;
+                        if is_my_entity {
+                            entity.tile_position = tile_pos;
+                        } else {
+                            // other entity - add to position buffer for interpolation
+                            if state.entity_interpolation {
+                                entity.position_buffer.push(PositionSnapshot {
+                                    timestamp: current_time,
+                                    position: tile_pos,
+                                });
+                            } else {
+                                entity.tile_position = tile_pos;
+                            }
+                        }
+                    }
 
-                            if let Some(ref path) = state.confirmed_path {
-                                if let Some(last_tile) = path.last() {
-                                    if *last_tile == tile_pos {
-                                        state.confirmed_path = None;
-                                    }
+                    if is_my_entity {
+                        if state.server_reconciliation {
+                            if let Some(last_input) = last_processed_input {
+                                reconcile_client_state(state, delta.entity_id, last_input);
+                            }
+                        } else {
+                            state.pending_inputs.clear();
+                        }
+                        state.pending_move = None;
+
+                        if let Some(ref path) = state.confirmed_path {
+                            if let Some(last_tile) = path.last() {
+                                if *last_tile == tile_pos {
+                                    state.confirmed_path = None;
                                 }
                             }
                         }
                     }
                 }
-
                 DeltaType::ActionStarted { action: _ } => {}
-
                 DeltaType::Removed => {
                     state.visible_entities.remove(&delta.entity_id);
                 }
             }
+        }
+    }
+}
+
+/// server reconciliation: re-apply inputs that the server hasn't processed yet
+fn reconcile_client_state(state: &mut ClientState, entity_id: u64, last_processed_input: u32) {
+    // remove all inputs that have been processed by the server
+    state.pending_inputs.retain(|input| input.input_sequence_number > last_processed_input);
+
+    info!(
+        "Reconciliation: server processed up to input #{}, {} inputs remaining",
+        last_processed_input,
+        state.pending_inputs.len()
+    );
+
+    // re-apply all remaining inputs on top of the server's authoritative state
+    if let Some(entity) = state.visible_entities.get_mut(&entity_id) {
+        for pending_input in &state.pending_inputs {
+            apply_action_to_position(&pending_input.action, &mut entity.tile_position);
+            info!(
+                "Re-applied input #{}: {:?} -> {:?}",
+                pending_input.input_sequence_number, pending_input.action, entity.tile_position
+            );
         }
     }
 }
@@ -570,8 +678,92 @@ pub fn spawn_client_entity(
             player_id: snapshot.player_id,
             entity,
             tree: snapshot.tree,
+            position_buffer: Vec::new(),
+            server_position: snapshot.tile_position,
+            interpolated_position: None,
         },
     );
+}
+
+/// Interpolation system - computes smooth positions for remote entities
+pub fn interpolate_entities(mut client_state: ResMut<ClientState>, time: Res<Time>) {
+    if !client_state.entity_interpolation {
+        return;
+    }
+
+    let current_time = time.elapsed_seconds_f64();
+    let render_timestamp = current_time - client_state.interpolation_delay;
+    let my_entity_id = client_state.my_entity_id;
+
+    for (entity_id, entity) in client_state.visible_entities.iter_mut() {
+        if Some(*entity_id) == my_entity_id {
+            continue;
+        }
+        if entity.tree.is_some() {
+            continue;
+        }
+
+        let buffer = &mut entity.position_buffer;
+
+        // drop old positions that are older than we need
+        buffer.retain(|snapshot| snapshot.timestamp >= render_timestamp - 1.0);
+
+        // if we don't have enough data, just use the server position
+        if buffer.len() < 2 {
+            entity.interpolated_position = Some(entity.server_position);
+            continue;
+        }
+
+        // find the two positions surrounding the render timestamp
+        let mut p0: Option<&PositionSnapshot> = None;
+        let mut p1: Option<&PositionSnapshot> = None;
+
+        for i in 0..buffer.len() - 1 {
+            if buffer[i].timestamp <= render_timestamp && render_timestamp <= buffer[i + 1].timestamp {
+                p0 = Some(&buffer[i]);
+                p1 = Some(&buffer[i + 1]);
+                break;
+            }
+        }
+
+        if let (Some(snap0), Some(snap1)) = (p0, p1) {
+            // linear interpolation between the two positions
+            let t0 = snap0.timestamp;
+            let t1 = snap1.timestamp;
+            let pos0 = snap0.position;
+            let pos1 = snap1.position;
+
+            let interpolation_factor = if (t1 - t0).abs() > 0.0001 {
+                ((render_timestamp - t0) / (t1 - t0)).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+
+            // for tile-based movement, snap to nearest tile
+            entity.interpolated_position = if interpolation_factor < 0.5 {
+                Some(pos0)
+            } else {
+                Some(pos1)
+            };
+        } else {
+            // fallback to latest server position
+            entity.interpolated_position = Some(entity.server_position);
+        }
+    }
+}
+
+/// helper function to apply an action to a position for prediction and reconciliation
+fn apply_action_to_position(action: &GameAction, position: &mut TilePosition) {
+    match action {
+        GameAction::Move { path } => {
+            if let Some(first_pos) = path.first() {
+                *position = *first_pos;
+            }
+        }
+        _ => {
+            // other actions don't change position immediately
+        }
+    }
 }
 
 pub fn update_confirmed_path(mut client_state: ResMut<ClientState>) {

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 pub mod actions;
 pub mod inventory;
 pub mod items;
-pub mod netcode;
+pub mod messages;
 pub mod pathfinding;
 pub mod skills;
 pub mod tile_system;

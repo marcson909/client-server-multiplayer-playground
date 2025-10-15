@@ -11,7 +11,19 @@ pub fn update_entity_positions(
 ) {
     for (networked, mut transform) in query.iter_mut() {
         if let Some(entity) = client_state.visible_entities.get(&networked.entity_id) {
-            let target = entity.tile_position.to_world().extend(0.0);
+            // use interpolated position for remote entities if available
+            let display_position = if Some(networked.entity_id) == client_state.my_entity_id {
+                // for our own entity, use the predicted position
+                entity.tile_position
+            } else if let Some(interp_pos) = entity.interpolated_position {
+                // for remote entities, use interpolated position
+                interp_pos
+            } else {
+                // fallback to actual tile position
+                entity.tile_position
+            };
+
+            let target = display_position.to_world().extend(0.0);
             transform.translation = transform.translation.lerp(target, 0.2);
         }
     }
@@ -39,6 +51,94 @@ pub fn update_tree_visuals(
         }
     }
 }
+/// draw prediction and interpolation ghosts for debugging
+pub fn draw_netcode_ghosts(mut gizmos: Gizmos, client_state: Res<ClientState>) {
+    if client_state.show_prediction_ghosts {
+        if let Some(my_entity_id) = client_state.my_entity_id {
+            if let Some(my_entity) = client_state.visible_entities.get(&my_entity_id) {
+                // draw server's authoritative position as a ghost
+                let server_pos = my_entity.server_position.to_world();
+                let ghost_size = TILE_SIZE * 0.8;
+
+                // semi-transparent blue circle for server position
+                gizmos.circle_2d(
+                    server_pos,
+                    ghost_size * 0.4,
+                    Color::srgba(0.3, 0.5, 1.0, 0.5),
+                );
+
+                // line from server position to predicted position
+                let predicted_pos = my_entity.tile_position.to_world();
+                if server_pos != predicted_pos {
+                    gizmos.line_2d(
+                        server_pos,
+                        predicted_pos,
+                        Color::srgba(1.0, 1.0, 0.0, 0.7),
+                    );
+                }
+
+                // label
+                gizmos.rect_2d(
+                    server_pos + Vec2::new(0.0, TILE_SIZE * 0.6),
+                    0.0,
+                    Vec2::new(20.0, 4.0),
+                    Color::srgba(0.3, 0.5, 1.0, 0.8),
+                );
+            }
+        }
+    }
+
+    // draw interpolation ghosts and buffer endpoints for remote players
+    if client_state.show_interpolation_ghosts {
+        let my_entity_id = client_state.my_entity_id;
+
+        for (entity_id, entity) in client_state.visible_entities.iter() {
+            // skip local player and trees
+            if Some(*entity_id) == my_entity_id || entity.tree.is_some() {
+                continue;
+            }
+
+            // draw interpolation buffer positions
+            if entity.position_buffer.len() >= 2 {
+                let buffer = &entity.position_buffer;
+
+                // draw first position (oldest)
+                let pos0 = buffer[0].position.to_world();
+                gizmos.circle_2d(
+                    pos0,
+                    TILE_SIZE * 0.3,
+                    Color::srgba(1.0, 0.5, 0.0, 0.4),
+                );
+
+                // draw last position (newest)
+                let pos1 = buffer[buffer.len() - 1].position.to_world();
+                gizmos.circle_2d(
+                    pos1,
+                    TILE_SIZE * 0.3,
+                    Color::srgba(0.0, 1.0, 0.5, 0.4),
+                );
+
+                // line between them
+                gizmos.line_2d(
+                    pos0,
+                    pos1,
+                    Color::srgba(0.5, 0.5, 0.5, 0.3),
+                );
+
+                // show interpolated position
+                if let Some(interp_pos) = entity.interpolated_position {
+                    let interp_world = interp_pos.to_world();
+                    gizmos.circle_2d(
+                        interp_world,
+                        TILE_SIZE * 0.25,
+                        Color::srgba(1.0, 0.0, 1.0, 0.6),
+                    );
+                }
+            }
+        }
+    }
+}
+
 pub fn draw_tile_grid(mut gizmos: Gizmos, client_state: Res<ClientState>) {
     let grid_size = 20;
     let color = Color::srgba(1.0, 1.0, 1.0, 0.1);

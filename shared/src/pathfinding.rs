@@ -53,7 +53,7 @@ impl Pathfinder {
         !self.obstacles.contains(pos)
     }
 
-    pub fn find_path(&self, start: TilePosition, goal: TilePosition) -> Option<Vec<TilePosition>> {
+    pub fn find_path_a_star(&self, start: TilePosition, goal: TilePosition) -> Option<Vec<TilePosition>> {
         if start == goal {
             return Some(vec![goal]);
         }

@@ -12,6 +12,11 @@ pub enum ClientMessage {
     },
     QueueAction {
         action: GameAction,
+        input_sequence_number: u32,
+    },
+    QueueActions {
+        actions: Vec<GameAction>,
+        input_sequence_number: u32,
     },
     CancelAction,
     RequestPath {
@@ -93,6 +98,7 @@ pub struct EntitySnapshot {
     pub tile_position: TilePosition,
     pub player_id: Option<PlayerId>,
     pub tree: Option<Tree>,
+    pub last_processed_input: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -106,9 +112,11 @@ pub enum DeltaType {
     FullState {
         tile_pos: TilePosition,
         player_id: Option<PlayerId>,
+        last_processed_input: Option<u32>,
     },
     PositionOnly {
         tile_pos: TilePosition,
+        last_processed_input: Option<u32>,
     },
     ActionStarted {
         action: GameAction,

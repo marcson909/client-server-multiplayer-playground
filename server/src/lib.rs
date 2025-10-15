@@ -6,7 +6,7 @@ use bevy_renet::renet::*;
 use shared::actions::GameAction;
 use shared::inventory::Inventory;
 use shared::items::{ItemDefinition, ItemType};
-use shared::netcode::{ClientMessage, DeltaType, EntityDelta, EntitySnapshot, ServerMessage};
+use shared::messages::{ClientMessage, DeltaType, EntityDelta, EntitySnapshot, ServerMessage};
 use shared::pathfinding::Pathfinder;
 use shared::skills::{SkillType, Skills};
 use shared::tile_system::TilePosition;
@@ -22,6 +22,8 @@ pub mod interest_manager;
 pub struct ActionQueue {
     pub actions: VecDeque<GameAction>,
     pub current_action: Option<ActionInProgress>,
+    /// Suspended action (Strong actions can suspend Normal actions)
+    pub suspended_action: Option<ActionInProgress>,
 }
 
 #[derive(Clone, Debug)]
@@ -30,6 +32,7 @@ pub struct ActionInProgress {
     pub started_at: f64,
     pub completion_time: f64,
     pub current_path_index: usize,
+    pub repeat_count: u32,
 }
 
 impl Default for ActionQueue {
@@ -37,7 +40,14 @@ impl Default for ActionQueue {
         Self {
             actions: VecDeque::new(),
             current_action: None,
+            suspended_action: None,
         }
+    }
+}
+
+impl ActionInProgress {
+    pub fn should_repeat(&self) -> bool {
+        self.action.is_repeating()
     }
 }
 
@@ -67,6 +77,7 @@ pub struct ServerEntity {
     pub inventory: Option<Inventory>,
     pub skills: Option<Skills>,
     pub tree: Option<Tree>,
+    pub last_processed_input: Option<u32>,
 }
 
 #[derive(Default)]
@@ -166,6 +177,7 @@ pub fn spawn_trees(state: &mut ServerState, commands: &mut Commands) {
             inventory: None,
             skills: None,
             tree: Some(Tree::new(tree_type)),
+            last_processed_input: None,
         };
 
         state.entities.insert(entity_id, server_entity);
@@ -196,8 +208,14 @@ pub fn server_update_system(
                     client_id.raw(),
                     match &client_msg {
                         ClientMessage::Join { name } => format!("Join(name={})", name),
-                        ClientMessage::QueueAction { action } =>
-                            format!("QueueAction({:?})", action),
+                        ClientMessage::QueueAction {
+                            action,
+                            input_sequence_number,
+                        } => format!("QueueAction({:?}, seq={})", action, input_sequence_number),
+                        ClientMessage::QueueActions {
+                            actions,
+                            input_sequence_number,
+                        } => format!("QueueActions([{} actions], seq={})", actions.len(), input_sequence_number),
                         ClientMessage::CancelAction => "CancelAction".to_string(),
                         ClientMessage::RequestPath { start, goal } =>
                             format!("RequestPath({:?} -> {:?})", start, goal),
@@ -210,6 +228,7 @@ pub fn server_update_system(
                     &mut interest_manager,
                     &mut server,
                     &mut commands,
+                    time.elapsed_seconds_f64(),
                 );
             }
         }
@@ -237,6 +256,7 @@ pub fn handle_client_message(
     interest_manager: &mut InterestManager,
     server: &mut RenetServer,
     commands: &mut Commands,
+    current_time: f64,
 ) {
     match message {
         ClientMessage::Join { name } => {
@@ -267,6 +287,7 @@ pub fn handle_client_message(
                 inventory: Some(inventory.clone()),
                 skills: Some(skills.clone()),
                 tree: None,
+                last_processed_input: None,
             };
 
             state.entities.insert(entity_id, server_entity);
@@ -318,15 +339,16 @@ pub fn handle_client_message(
             update_interest_for_player(player_id, state, interest_manager, server);
         }
 
-        ClientMessage::QueueAction { action } => {
+        ClientMessage::QueueAction {
+            action,
+            input_sequence_number,
+        } => {
             if let Some(player) = state.players.get(&player_id) {
                 info!(
-                    "Player {:?} '{}' queuing action: {:?}",
-                    player_id, player.name, action
+                    "Player {:?} '{}' queuing action: {:?} (priority: {:?}, input #{})",
+                    player_id, player.name, action, action.priority(), input_sequence_number
                 );
-
                 if let GameAction::ChopTree { tree_entity_id } = action {
-
                     let validation_result = {
                         let player_entity = state.entities.get(&player.entity_id);
                         let tree_entity = state.entities.get(&tree_entity_id);
@@ -347,40 +369,132 @@ pub fn handle_client_message(
                         return;
                     }
                 }
+
                 if let Some(entity) = state.entities.get_mut(&player.entity_id) {
-                    entity.action_queue.actions.push_back(action.clone());
-                    info!(
-                        "Action queued for player {:?}. Queue size: {}",
-                        player_id,
-                        entity.action_queue.actions.len()
+                    let result = queue_action_with_priority(
+                        &mut entity.action_queue,
+                        &mut entity.tile_pos,
+                        action.clone(),
+                        current_time,
                     );
+
+                    entity.last_processed_input = Some(input_sequence_number);
+
+                    match result {
+                        QueueResult::Started => {
+                            info!("  → Action started immediately");
+                        }
+                        QueueResult::Queued => {
+                            info!("  → Action queued (queue size: {})", entity.action_queue.actions.len());
+                        }
+                        QueueResult::ReplacedSameType => {
+                            info!("  → Replaced in-progress action of same type (RuneScape-style)");
+                        }
+                        QueueResult::CancelledAndStarted => {
+                            info!("  → Cancelled weak action and started (priority: Normal > Weak)");
+                        }
+                        QueueResult::Suspended => {
+                            info!("  → Suspended normal action (priority: Strong)");
+                        }
+                        QueueResult::QueueFull => {
+                            warn!("  → Queue full (max 1 queued), action rejected");
+                            return;
+                        }
+                    }
+
                     let msg = ServerMessage::ActionQueued { action };
                     send_message(server, player_id, &msg);
                 }
             }
         }
+        ClientMessage::QueueActions {
+            actions,
+            input_sequence_number,
+        } => {
+            if let Some(player) = state.players.get(&player_id) {
+                info!(
+                    "Player {:?} '{}' queuing {} actions (input #{})",
+                    player_id, player.name, actions.len(), input_sequence_number
+                );
 
+                let mut all_valid = true;
+                for action in &actions {
+                    if let GameAction::ChopTree { tree_entity_id } = action {
+                        let validation_result = {
+                            let player_entity = state.entities.get(&player.entity_id);
+                            let tree_entity = state.entities.get(tree_entity_id);
+
+                            match (player_entity, tree_entity) {
+                                (Some(p_entity), Some(t_entity)) => {
+                                    validate_woodcutting_action(p_entity, t_entity, server, player_id)
+                                }
+                                _ => {
+                                    warn!("Invalid woodcutting: entity not found (player={}, tree={})",
+                                        player.entity_id, tree_entity_id);
+                                    false
+                                }
+                            }
+                        };
+
+                        if !validation_result {
+                            all_valid = false;
+                            break;
+                        }
+                    }
+                }
+
+                if all_valid && !actions.is_empty() {
+                    if let Some(entity) = state.entities.get_mut(&player.entity_id) {
+                        let first_action = actions[0].clone();
+                        let result = queue_action_with_priority(
+                            &mut entity.action_queue,
+                            &mut entity.tile_pos,
+                            first_action.clone(),
+                            current_time,
+                        );
+                        info!("  First action ({:?}): {:?}", first_action.priority(), result);
+
+                        for action in &actions[1..] {
+                            if entity.action_queue.actions.len() < 1 {
+                                entity.action_queue.actions.push_back(action.clone());
+                                info!("  Queued: {:?}", action);
+                            } else {
+                                warn!("  Queue full, couldn't add: {:?}", action);
+                            }
+                        }
+
+                        entity.last_processed_input = Some(input_sequence_number);
+                        info!(
+                            "Action chain processed for player {:?}. Queue size: {}",
+                            player_id,
+                            entity.action_queue.actions.len()
+                        );
+                    }
+                }
+            }
+        }
         ClientMessage::CancelAction => {
             if let Some(player) = state.players.get(&player_id) {
                 if let Some(entity) = state.entities.get_mut(&player.entity_id) {
                     let queue_size = entity.action_queue.actions.len();
+                    let has_current = entity.action_queue.current_action.is_some();
                     entity.action_queue.current_action = None;
                     entity.action_queue.actions.clear();
                     info!(
-                        "Player {:?} '{}' cancelled action. Cleared {} queued actions",
-                        player_id, player.name, queue_size
+                        "Player {:?} '{}' cancelled action. Cleared {} queued actions{}",
+                        player_id, player.name, queue_size,
+                        if has_current { " and current action" } else { "" }
                     );
                 }
             }
         }
-
         ClientMessage::RequestPath { start, goal } => {
             info!(
                 "Player {:?} requesting path from {:?} to {:?}",
                 player_id, start, goal
             );
 
-            if let Some(path) = state.pathfinder.find_path(start, goal) {
+            if let Some(path) = state.pathfinder.find_path_a_star(start, goal) {
                 info!("Path found: {} tiles", path.len());
                 let msg = ServerMessage::PathFound { path: path.clone() };
                 send_message(server, player_id, &msg);
@@ -572,17 +686,15 @@ pub fn process_action_queue(
     }
 
     if let Some(action) = queue.actions.pop_front() {
-        let (duration, start_index) = match &action {
+        let duration = action.duration_seconds();
+        let start_index = match &action {
             GameAction::Move { path } => {
                 if !path.is_empty() {
                     *tile_pos = path[0];
                 }
-                (TICK_RATE as f64, 0)
+                0
             }
-            GameAction::ChopTree { .. } => (3.0, 0),
-            GameAction::Attack { .. } => (2.4, 0),
-            GameAction::UseItem { .. } => (0.6, 0),
-            GameAction::Interact { .. } => (1.2, 0),
+            _ => 0,
         };
 
         queue.current_action = Some(ActionInProgress {
@@ -590,8 +702,98 @@ pub fn process_action_queue(
             started_at: current_time,
             completion_time: current_time + duration,
             current_path_index: start_index,
+            repeat_count: 0,
         });
     }
+}
+
+#[derive(Debug)]
+pub enum QueueResult {
+    Started,                  // action started immediately
+    Queued,                   // action queued for later
+    ReplacedSameType,         // replaced in-progress action of same type
+    CancelledAndStarted,      // cancelled lower priority action and started
+    Suspended,                // suspended normal action (by strong action)
+    QueueFull,                // queue is full (max 1 queued action)
+}
+
+/// handles adding a new action to the queue with priority-based cancellation
+pub fn queue_action_with_priority(
+    queue: &mut ActionQueue,
+    tile_pos: &mut TilePosition,
+    new_action: GameAction,
+    current_time: f64,
+) -> QueueResult {
+    let new_priority = new_action.priority();
+
+    if let Some(ref current) = queue.current_action {
+        let current_priority = current.action.priority();
+
+        // Strong actions cancel/suspend current action
+        if new_priority == shared::actions::ActionPriority::Strong {
+            if current_priority == shared::actions::ActionPriority::Normal {
+                // Suspend normal action
+                queue.suspended_action = queue.current_action.take();
+                queue.actions.clear();
+            } else {
+                // Cancel weak action
+                queue.current_action = None;
+                queue.actions.clear();
+            }
+            start_action(queue, tile_pos, new_action, current_time);
+            return QueueResult::Started;
+        }
+
+        // Normal actions cancel Weak actions
+        if new_priority == shared::actions::ActionPriority::Normal
+            && current_priority == shared::actions::ActionPriority::Weak {
+            queue.current_action = None;
+            queue.actions.clear();
+            start_action(queue, tile_pos, new_action, current_time);
+            return QueueResult::CancelledAndStarted;
+        }
+
+        if new_action.replaces_same_type(&current.action) {
+            queue.current_action = None;
+            queue.actions.clear();
+            start_action(queue, tile_pos, new_action, current_time);
+            return QueueResult::ReplacedSameType;
+        }
+
+        if queue.actions.is_empty() {
+            queue.actions.push_back(new_action);
+            return QueueResult::Queued;
+        } else {
+            return QueueResult::QueueFull;
+        }
+    }
+
+    // no current action, start immediately
+    start_action(queue, tile_pos, new_action, current_time);
+    QueueResult::Started
+}
+
+fn start_action(queue: &mut ActionQueue, tile_pos: &mut TilePosition, action: GameAction, current_time: f64) {
+    let duration = action.duration_seconds();
+    let start_index = match &action {
+        GameAction::Move { path } => {
+            // immediately move to first position in path
+            if !path.is_empty() {
+                *tile_pos = path[0];
+                info!("  → Player moved to {:?} (start of path)", path[0]);
+            }
+            0
+        }
+        _ => 0,
+    };
+
+    queue.current_action = Some(ActionInProgress {
+        action,
+        started_at: current_time,
+        completion_time: current_time + duration,
+        current_path_index: start_index,
+        repeat_count: 0,
+    });
 }
 
 pub fn handle_woodcutting_completion(
@@ -750,6 +952,7 @@ pub fn update_interest_for_player(
                     tile_position: e.tile_pos,
                     player_id: e.player_id,
                     tree: e.tree.clone(),
+                    last_processed_input: e.last_processed_input,
                 })
             })
             .collect();
@@ -792,10 +995,12 @@ pub fn send_delta_updates(
                     DeltaType::FullState {
                         tile_pos: entity.tile_pos,
                         player_id: entity.player_id,
+                        last_processed_input: entity.last_processed_input,
                     }
                 } else {
                     DeltaType::PositionOnly {
                         tile_pos: entity.tile_pos,
+                        last_processed_input: entity.last_processed_input,
                     }
                 },
             };
@@ -892,11 +1097,9 @@ pub fn handle_disconnections(
     interest_manager: &mut InterestManager,
     commands: &mut Commands,
 ) {
-    // Get list of currently connected clients
     let connected_clients: HashSet<u64> =
         server.clients_id().into_iter().map(|id| id.raw()).collect();
 
-    // Find players that are no longer connected
     let disconnected_players: Vec<PlayerId> = state
         .players
         .keys()
@@ -904,23 +1107,15 @@ pub fn handle_disconnections(
         .copied()
         .collect();
 
-    // Clean up each disconnected player
     for player_id in disconnected_players {
         if let Some(player) = state.players.remove(&player_id) {
             info!("Player {:?} disconnected", player_id);
-
-            // Remove player entity from world
             if let Some(entity_data) = state.entities.remove(&player.entity_id) {
                 commands.entity(entity_data.entity).despawn();
             }
-
-            // Remove from interest manager
             interest_manager.client_views.remove(&player_id);
-
-            // Remove from last states
             state.last_states.remove(&player.entity_id);
 
-            // Notify other clients that this player left
             let msg = ServerMessage::EntitiesLeft {
                 entity_ids: vec![player.entity_id],
             };
